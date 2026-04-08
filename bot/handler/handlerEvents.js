@@ -341,7 +341,148 @@ if (OWNER_IDS.includes(String(senderID)) && typeof body === "string" && body.tri
         // ignore
 }
 // =================== END OWNER ONLY NO-PREFIX SUPPORT ===================
+// ===================== KABBO AI (WITH REPLY SUPPORT) =====================
+const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
 
+const botNames = ["kabbo", "kabba", "কাব্য"];
+const lowerBody = typeof body === "string" ? body.toLowerCase() : "";
+const matchedName = botNames.find(name => lowerBody.startsWith(name));
+
+if (matchedName) {
+    let userQuery = body.slice(matchedName.length).trim();
+    if (userQuery) {
+        try {
+            api.sendTypingIndicator(event.threadID);
+            
+            // ========== চেক করুন এটা থিম সিলেকশনের রিপ্লাই কিনা ==========
+            // থিম কমান্ডের রিপ্লাই প্যাটার্ন: "Reply to this message with a number"
+            const isThemeSelection = userQuery.match(/^\d+$/) ||  // শুধু সংখ্যা
+                                     userQuery.match(/^(থিম|theme|নং|number|নম্বর)?\s*(\d+)/i); // "থিম ২", "2 নম্বর"
+            
+            if (isThemeSelection) {
+                // সংখ্যা বের করুন
+                let number = userQuery.match(/\d+/);
+                if (number) {
+                    const selectedNumber = number[0];
+                    
+                    // খুঁজুন থিম কমান্ডের সবথেকে রিসেন্ট রিপ্লাই মেসেজ
+                    const onReplyMap = global.GoatBot.onReply;
+                    let targetReply = null;
+                    
+                    for (const [msgID, replyData] of onReplyMap) {
+                        if (replyData.commandName === "theme" && replyData.themes) {
+                            targetReply = {
+                                messageID: msgID,
+                                data: replyData
+                            };
+                            break;
+                        }
+                    }
+                    
+                    if (targetReply) {
+                        // ✅ রিপ্লাই হিসেবে নম্বর পাঠান
+                        await message.reply({
+                            body: selectedNumber,
+                            messageID: targetReply.messageID
+                        });
+                        
+                        console.log(`[Kabbo] 🎯 THEME SELECTION: ${selectedNumber}`);
+                        return; // এখানে return করুন কারণ রিপ্লাই হয়ে গেছে
+                    } else {
+                        // কোনো রিপ্লাই কনটেক্সট না থাকলে
+                        await message.reply(`🤖 কোনো থিম সিলেকশন অ্যাক্টিভ নেই। আগে থিম জেনারেট করুন:\n"${prefix}theme আপনার থিমের বিবরণ"`);
+                        return;
+                    }
+                }
+            }
+            
+            // ========== STEP 2: ডিরেক্টরি স্ক্যান ==========
+            const commandsPath = path.join(process.cwd(), "commands");
+            let allCommands = [];
+            
+            if (fs.existsSync(commandsPath)) {
+                const folders = fs.readdirSync(commandsPath);
+                for (const folder of folders) {
+                    const cmdPath = path.join(commandsPath, folder);
+                    if (fs.statSync(cmdPath).isDirectory()) {
+                        const cmdFiles = fs.readdirSync(cmdPath).filter(f => f.endsWith(".js"));
+                        for (const file of cmdFiles) {
+                            try {
+                                const cmd = require(path.join(cmdPath, file));
+                                if (cmd.config && cmd.config.name) {
+                                    allCommands.push({
+                                        name: cmd.config.name,
+                                        aliases: cmd.config.aliases || [],
+                                        category: folder
+                                    });
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                }
+            }
+            
+            // ========== STEP 3: AI কমান্ড ডিটেক্ট ==========
+            const commandListText = allCommands.map(cmd => cmd.name).join(", ");
+            
+            const aiPrompt = `You are a command selector.
+
+USER REQUEST: "${userQuery}"
+
+AVAILABLE COMMANDS: ${commandListText}
+
+OUTPUT FORMAT (ONLY this):
+CMD:command_name|arguments
+
+EXAMPLES:
+- "guitar theme dao" → CMD:settheme|guitar
+- "ekta gan shonao" → CMD:sing|
+- "sabai ke mention koro" → CMD:tagall|
+- "white list on" → CMD:whitelist|on
+- "help" → CMD:help|
+
+Now respond with ONLY CMD:format:`;
+
+            const aiRes = await axios.post("https://mahmud-infinity-api.onrender.com/api/ai", {
+                question: aiPrompt,
+                timeout: 10000
+            });
+            
+            let aiResponse = aiRes.data?.response || "";
+            
+            if (aiResponse.startsWith("CMD:")) {
+                const parts = aiResponse.slice(4).split("|");
+                let commandName = parts[0];
+                let commandArgs = parts[1] || "";
+                
+                const cmdExists = allCommands.some(cmd => 
+                    cmd.name === commandName || cmd.aliases.includes(commandName)
+                );
+                
+                if (cmdExists) {
+                    const newBody = prefix + commandName + (commandArgs ? " " + commandArgs : "");
+                    event.body = newBody;
+                    body = newBody;
+                    console.log(`[Kabbo] 🎯 EXECUTE: ${commandName} ${commandArgs}`);
+                } else {
+                    await message.reply(`🤖 "${commandName}" কমান্ডটি খুঁজে পাইনি।\n\n"${prefix}help" দিয়ে দেখুন।`);
+                    return;
+                }
+            } else {
+                await message.reply(`🤖 বলুন কী করতে চান?\n\n"${prefix}help" দেখুন সব কমান্ড।`);
+                return;
+            }
+            
+        } catch (error) {
+            console.error("Kabbo Error:", error);
+            await message.reply("🤖 একটু পর আবার চেষ্টা করবেন।");
+            return;
+        }
+    }
+}
+// =================== END KABBO AI ===================
                         if (!body || !body.startsWith(prefix))
                                 return;
 
