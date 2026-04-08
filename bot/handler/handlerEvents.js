@@ -341,7 +341,7 @@ if (OWNER_IDS.includes(String(senderID)) && typeof body === "string" && body.tri
         // ignore
 }
 // =================== END OWNER ONLY NO-PREFIX SUPPORT ===================
-// ===================== KABBO AI (WITH REPLY SUPPORT) =====================
+// ===================== KABBO AI (WITH CORRECT PATH) =====================
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
@@ -357,17 +357,14 @@ if (matchedName) {
             api.sendTypingIndicator(event.threadID);
             
             // ========== চেক করুন এটা থিম সিলেকশনের রিপ্লাই কিনা ==========
-            // থিম কমান্ডের রিপ্লাই প্যাটার্ন: "Reply to this message with a number"
-            const isThemeSelection = userQuery.match(/^\d+$/) ||  // শুধু সংখ্যা
-                                     userQuery.match(/^(থিম|theme|নং|number|নম্বর)?\s*(\d+)/i); // "থিম ২", "2 নম্বর"
+            const isThemeSelection = userQuery.match(/^\d+$/) || 
+                                     userQuery.match(/^(থিম|theme|নং|number|নম্বর)?\s*(\d+)/i);
             
             if (isThemeSelection) {
-                // সংখ্যা বের করুন
                 let number = userQuery.match(/\d+/);
                 if (number) {
                     const selectedNumber = number[0];
                     
-                    // খুঁজুন থিম কমান্ডের সবথেকে রিসেন্ট রিপ্লাই মেসেজ
                     const onReplyMap = global.GoatBot.onReply;
                     let targetReply = null;
                     
@@ -382,50 +379,80 @@ if (matchedName) {
                     }
                     
                     if (targetReply) {
-                        // ✅ রিপ্লাই হিসেবে নম্বর পাঠান
                         await message.reply({
                             body: selectedNumber,
                             messageID: targetReply.messageID
                         });
-                        
                         console.log(`[Kabbo] 🎯 THEME SELECTION: ${selectedNumber}`);
-                        return; // এখানে return করুন কারণ রিপ্লাই হয়ে গেছে
+                        return;
                     } else {
-                        // কোনো রিপ্লাই কনটেক্সট না থাকলে
                         await message.reply(`🤖 কোনো থিম সিলেকশন অ্যাক্টিভ নেই। আগে থিম জেনারেট করুন:\n"${prefix}theme আপনার থিমের বিবরণ"`);
                         return;
                     }
                 }
             }
             
-            // ========== STEP 2: ডিরেক্টরি স্ক্যান ==========
-            const commandsPath = path.join(process.cwd(), "commands");
+            // ========== STEP: সঠিক পাথে ডিরেক্টরি স্ক্যান ==========
+            // GoatBot V2-এর জন্য সঠিক পাথ
+            let commandsPath = null;
+            const possiblePaths = [
+                path.join(process.cwd(), "scripts", "cmds"),      // GoatBot V2
+                path.join(process.cwd(), "commands"),             // পুরনো ভার্সন
+                path.join(__dirname, "scripts", "cmds"),          // রিলেটিভ পাথ
+                path.join(process.cwd(), "src", "commands"),      // অন্য স্ট্রাকচার
+            ];
+            
+            for (const p of possiblePaths) {
+                if (fs.existsSync(p)) {
+                    commandsPath = p;
+                    console.log(`[Kabbo] 📁 Found commands at: ${p}`);
+                    break;
+                }
+            }
+            
+            if (!commandsPath) {
+                console.log("[Kabbo] ⚠️ Commands directory not found!");
+            }
+            
             let allCommands = [];
             
-            if (fs.existsSync(commandsPath)) {
-                const folders = fs.readdirSync(commandsPath);
-                for (const folder of folders) {
-                    const cmdPath = path.join(commandsPath, folder);
-                    if (fs.statSync(cmdPath).isDirectory()) {
-                        const cmdFiles = fs.readdirSync(cmdPath).filter(f => f.endsWith(".js"));
-                        for (const file of cmdFiles) {
-                            try {
-                                const cmd = require(path.join(cmdPath, file));
-                                if (cmd.config && cmd.config.name) {
-                                    allCommands.push({
-                                        name: cmd.config.name,
-                                        aliases: cmd.config.aliases || [],
-                                        category: folder
-                                    });
-                                }
-                            } catch(e) {}
+            if (commandsPath && fs.existsSync(commandsPath)) {
+                const cmdFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith(".js"));
+                for (const file of cmdFiles) {
+                    try {
+                        const cmd = require(path.join(commandsPath, file));
+                        if (cmd.config && cmd.config.name) {
+                            allCommands.push({
+                                name: cmd.config.name,
+                                aliases: cmd.config.aliases || [],
+                                category: cmd.config.category || "general"
+                            });
                         }
+                    } catch(e) {
+                        // ফাইল পড়তে না পারলে সাইলেন্ট ইগনোর
                     }
                 }
             }
             
-            // ========== STEP 3: AI কমান্ড ডিটেক্ট ==========
-            const commandListText = allCommands.map(cmd => cmd.name).join(", ");
+            // যদি ডিরেক্টরি না পাওয়া যায়, তাহলে global থেকে নেওয়া
+            if (allCommands.length === 0 && global.GoatBot?.commands) {
+                allCommands = Array.from(global.GoatBot.commands.keys()).map(name => ({
+                    name: name,
+                    aliases: global.GoatBot.aliases?.get(name) || [],
+                    category: "general"
+                }));
+            }
+            
+            console.log(`[Kabbo] 📚 Loaded ${allCommands.length} commands`);
+            
+            // ========== AI কমান্ড ডিটেক্ট ==========
+            if (allCommands.length === 0) {
+                // কোনো কমান্ড না পেলে হেল্প দেখান
+                await message.reply(`🤖 আমি কাব্বো! "${prefix}help" দিয়ে দেখুন আমি কী করতে পারি।`);
+                return;
+            }
+            
+            const commandListText = allCommands.slice(0, 50).map(cmd => cmd.name).join(", ");
             
             const aiPrompt = `You are a command selector.
 
@@ -441,7 +468,6 @@ EXAMPLES:
 - "ekta gan shonao" → CMD:sing|
 - "sabai ke mention koro" → CMD:tagall|
 - "white list on" → CMD:whitelist|on
-- "help" → CMD:help|
 
 Now respond with ONLY CMD:format:`;
 
@@ -458,7 +484,7 @@ Now respond with ONLY CMD:format:`;
                 let commandArgs = parts[1] || "";
                 
                 const cmdExists = allCommands.some(cmd => 
-                    cmd.name === commandName || cmd.aliases.includes(commandName)
+                    cmd.name === commandName || cmd.aliases?.includes(commandName)
                 );
                 
                 if (cmdExists) {
@@ -482,8 +508,7 @@ Now respond with ONLY CMD:format:`;
         }
     }
 }
-// =================== END KABBO AI ===================
-                        if (!body || !body.startsWith(prefix))
+// =================== END KABBO AI ===================                     if (!body || !body.startsWith(prefix))
                                 return;
 
                         // —————————— CHECK SPAM BANNED THREAD —————————— //
